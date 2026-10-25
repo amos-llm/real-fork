@@ -167,13 +167,23 @@ export function ForkPopover(props: PluginButtonContentProps) {
     handlePick(null);
   }, [handlePick]);
 
+  const handleForkAgain = useCallback(() => {
+    setResult(null);
+    setError(null);
+  }, []);
+
   const styles = useMemo(
     () => ({
       intro: { color: theme.colors.foregroundMuted, fontSize: 11 },
       title: { color: theme.colors.foreground, fontWeight: "600" as const },
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 },
       error: { color: theme.colors.statusDanger, fontSize: 12 },
-      success: { color: theme.colors.statusSuccess, fontSize: 12 },
+      successTitle: {
+        color: theme.colors.statusSuccess,
+        fontSize: 13,
+        fontWeight: "600" as const,
+      },
+      agentTitle: { color: theme.colors.foreground, fontSize: 14, fontWeight: "600" as const },
       button: {
         marginTop: 8,
         paddingVertical: 8,
@@ -189,6 +199,40 @@ export function ForkPopover(props: PluginButtonContentProps) {
   const points = data?.points ?? [];
   const disabled = busyId !== null;
 
+  // The fork point list can be long, so the outcome replaces it instead of being
+  // appended below the fold.
+  if (result) {
+    return (
+      <View style={LIST_STYLE}>
+        <Text style={styles.successTitle}>Forked ✓</Text>
+        <Text style={styles.agentTitle}>{result.title ?? "New agent"}</Text>
+        <Text style={styles.muted}>
+          {`${result.entries} entries kept · ${result.dropped} dropped · ${result.agentId.slice(0, 8)}`}
+        </Text>
+        <Text style={styles.muted}>
+          It is at the top of this workspace&apos;s agent list, with the whole conversation and the
+          source cache key.
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Fork again"
+          onPress={handleForkAgain}
+          style={styles.button}
+        >
+          <Text style={styles.buttonText}>Fork again</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          onPress={handleClose}
+          style={styles.button}
+        >
+          <Text style={styles.buttonText}>Close</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View style={LIST_STYLE}>
       <Text style={styles.title}>Fork without losing the cache</Text>
@@ -198,6 +242,8 @@ export function ForkPopover(props: PluginButtonContentProps) {
       </Text>
 
       {agentId === null ? <Text style={styles.error}>Open this pill from an agent.</Text> : null}
+      {busyId !== null ? <Text style={styles.muted}>Forking…</Text> : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
       {isPending && agentId !== null ? (
         <Text style={styles.muted}>Reading the pi session…</Text>
       ) : null}
@@ -230,17 +276,6 @@ export function ForkPopover(props: PluginButtonContentProps) {
       ))}
 
       {busyId !== null ? <Text style={styles.muted}>Forking…</Text> : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {result ? (
-        <>
-          <Text style={styles.success}>
-            Forked {result.entries} entries ({result.dropped} dropped)
-          </Text>
-          <Text style={styles.muted}>
-            {result.title ?? "New agent"} · appears in this workspace&apos;s agent list
-          </Text>
-        </>
-      ) : null}
 
       <Pressable
         accessibilityRole="button"
