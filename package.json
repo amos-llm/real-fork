@@ -1,0 +1,37 @@
+{
+  "name": "real-fork",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fork a pi agent at the provider-session level so the prefix cache is reused",
+  "files": [
+    "paseo-plugin.json",
+    "README.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run format:check"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.12.0",
+    "@getpaseo/plugin": "0.12.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^24.0.0",
+    "@types/react": "~19.2.0",
+    "oxfmt": "^0.70.0",
+    "oxlint": "^1.85.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  }
+}

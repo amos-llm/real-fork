@@ -1,0 +1,8 @@
+{
+  "id": "real-fork",
+  "name": "Real Fork",
+  "description": "Fork a pi agent at the provider-session level, so the provider prefix cache is reused",
+  "requirements": {
+    "paseo": ">=0.12.0"
+  }
+}
