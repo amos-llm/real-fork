@@ -17,7 +17,7 @@ export const forkPointSchema = z.object({
   preview: z.string(),
   /** pi entry timestamp, ISO-8601, when the entry carries one. */
   at: z.string().nullable(),
-  /** How many entries the forked session would contain (context size proxy). */
+  /** How many entries the forked session would keep: everything before the point. */
   entries: z.number().int().nonnegative(),
 });
 
@@ -35,7 +35,7 @@ export const forkPointsRpc = defineRpc({
     agentId: z.string(),
     cwd: z.string(),
     sessionFile: z.string(),
-    /** Entries on the active branch (context size at the newest point). */
+    /** Total entries on the active branch (root → leaf). */
     branchEntries: z.number().int().nonnegative(),
     points: z.array(forkPointSchema),
   }),
@@ -43,9 +43,10 @@ export const forkPointsRpc = defineRpc({
 
 /**
  * Fork an agent by writing a new pi session file and reusing it for a new agent.
- * The copy is the active branch cut at `messageId` (a user message): the fork
- * re-answers that question, and anything after the point — including a
- * half-finished turn — is dropped, so the copy is always a settled session.
+ * The copy is the active branch cut just before `messageId` (a user message):
+ * the point's message is dropped so the fork rewrites it in its composer, and
+ * anything after the point — including a half-finished turn — is dropped too,
+ * so the copy is always a settled session.
  */
 export const forkRpc = defineRpc({
   name: "real-fork.fork",
@@ -58,9 +59,9 @@ export const forkRpc = defineRpc({
     title: z.string().nullable(),
     cwd: z.string(),
     sessionFile: z.string(),
-    /** Entries kept from the source branch (root → fork point). */
+    /** Entries kept from the source branch (root → just before the fork point). */
     entries: z.number().int().nonnegative(),
-    /** Entries dropped after the fork point (the part the parent keeps). */
+    /** Entries dropped from the fork point on, including the point itself. */
     dropped: z.number().int().nonnegative(),
   }),
 });

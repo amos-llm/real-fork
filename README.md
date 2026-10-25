@@ -1,6 +1,6 @@
 # real-fork
 
-Fork a **pi** agent so the provider's **prefix cache still answers the first turn**, and so the fork opens with the whole conversation in its timeline.
+Fork a **pi** agent so the provider's **prefix cache still answers the first turn**, and so the fork opens with the whole conversation up to the chosen message in its timeline.
 
 Paseo's built-in Fork builds a `<chat-history-summary>` text attachment and starts a brand-new session from it: different tokens, different session id, cache miss. `real-fork` copies pi's own session instead.
 
@@ -19,7 +19,7 @@ Against `opencode-go/deepseek-v4.1-flash`, forking this session's 248k-token bra
 ## What it does
 
 1. Resolve the source session file — Paseo records it as `persistence.nativeHandle`, with an id scan of `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`) as fallback.
-2. Follow `parentId` from the active leaf to the root and cut it at a chosen user message.
+2. Follow `parentId` from the active leaf to the root and cut it **just before** a chosen user message. The chosen message is the one being rewritten, so the copy ends on the settled state right before it; you then send the rewritten version in the fork's input box.
 3. Write `<cwd>/.pi/forks/<timestamp>_<suffix>.jsonl`: the source header (id kept, `parentSession` recorded) + the copied entries + a `session_info` naming the fork `<parent title> · fork`. `session_info` never reaches the model, so naming costs no context.
 4. Create a new workspace in the same directory (its own sidebar entry), then hand the file to the daemon's import path **targeting that workspace**: the fork opens from the file, so the timeline replays the whole history.
 
@@ -45,8 +45,8 @@ A composer pill on pi agents only:
 Real fork  ▾
 ┌──────────────────────────────────────────────┐
 │ Fork without losing the cache                │
-│ Copies the pi session, cut at a user         │
-│ message, same cache key, same cwd            │
+│ Copies the pi session, cut just before a     │
+│ user message — rewrite it in the fork        │
 │ 168 entries · 2m ago                         │
 │ How does the daemon pick a provider?         │
 │ 163 entries · 6m ago                         │
@@ -55,7 +55,7 @@ Real fork  ▾
 └──────────────────────────────────────────────┘
 ```
 
-- **A user message row** forks there: the copy ends at that question, which the fork re-answers. Anything after the point — including a half-finished turn — stays with the parent.
+- **A user message row** forks there: the copy ends just before that question, so you rewrite it in the fork's input box and send it. Anything from the point on — including a half-finished turn — stays with the parent.
 
 Either way the parent is untouched and the fork appears in the sidebar as its own entry, `<title> · fork`, in the same directory.
 

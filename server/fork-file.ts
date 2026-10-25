@@ -5,10 +5,12 @@ import { sessionInfoEntry, type PiSessionEntry, type PiSessionHeader } from "./p
 
 /**
  * Writes the artifact a fork hands to Paseo: a pi session file holding the
- * branch up to the fork point, with the source header's **session id kept**. The
- * id is the provider cache key (pi sends it as `prompt_cache_key`), so a fork
- * that keeps it repeats the source prefix under the same key and the cache
- * answers the first turn. A fresh id re-prefills the whole branch.
+ * branch before the fork point (the point's message is the one being
+ * rewritten, so it is kept out), with the source header's **session id
+ * kept**. The id is the provider cache key (pi sends it as
+ * `prompt_cache_key`), so a fork that keeps it repeats the source prefix under
+ * the same key and the cache answers the first turn. A fresh id re-prefills
+ * the whole branch.
  */
 
 export const FORK_DIR = path.join(".pi", "forks");

@@ -69,9 +69,11 @@ function PointRow({ point, theme, now, disabled, onPick }: PointRowProps) {
  * (280–420px wide, 440px tall), so this is just the list of fork points plus
  * the outcome of the last fork.
  *
- * A fork writes a new pi session file holding the active branch cut at a
- * chosen user message and reuses it for a new agent in a new workspace, so the
- * provider still sees the source prefix and its cache answers the first turn.
+ * A fork writes a new pi session file holding the active branch cut just
+ * before a chosen user message and reuses it for a new agent in a new
+ * workspace: the point's message — the one being rewritten — is kept out of
+ * the copy, so the provider still sees the source prefix and its cache
+ * answers the first turn.
  */
 export function ForkPopover(props: PluginButtonContentProps) {
   const { theme, close } = props;
@@ -167,7 +169,8 @@ export function ForkPopover(props: PluginButtonContentProps) {
         </Text>
         <Text style={styles.muted}>
           It is a new entry in the sidebar — its own workspace in the same directory — with the
-          whole conversation and the source cache key.
+          conversation up to that point and the source cache key. Send the rewritten message in its
+          input box.
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -193,8 +196,9 @@ export function ForkPopover(props: PluginButtonContentProps) {
     <View style={LIST_STYLE}>
       <Text style={styles.title}>Fork without losing the cache</Text>
       <Text style={styles.intro}>
-        Copies the pi session, cut at a user message, then resumes it in a new agent — same cwd,
-        model and tools, so the provider prefix cache still applies.
+        Copies the pi session, cut just before the user message you pick — its own workspace, same
+        cwd, model and tools, so the provider prefix cache still applies. Rewrite that message in
+        the fork's input box.
       </Text>
 
       {agentId === null ? <Text style={styles.error}>Open this pill from an agent.</Text> : null}

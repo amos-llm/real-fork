@@ -67,7 +67,7 @@ export function forkTitle(title: string | null): string {
   return base.endsWith("· fork") ? base : `${base} · fork`;
 }
 
-/** Branch entries up to and including `messageId` (a user message). */
+/** Branch entries before `messageId` (a user message the fork rewrites). */
 function selectSlice(branch: readonly PiSessionEntry[], messageId: string) {
   const slice = sliceBranch(branch, messageId);
   if (!slice) {
@@ -112,9 +112,11 @@ export function createForkHandler(options: { importSession?: ImportSession } = {
     const sourceFile = await resolveSessionFile(agent.persistence);
     const source = parseSession(await readFile(sourceFile, "utf8"));
     const branch = activeBranch(source.entries);
-    // Forking always cuts at a user message, so the copy ends on a settled
-    // state: whatever follows the point — including a half-finished turn with
-    // a dangling tool call — is dropped with the parent's tail.
+    // Forking always cuts just before a user message: the copy is the settled
+    // conversation up to that point, and the point itself is dropped, because
+    // the fork exists to rewrite that message in its own composer. Whatever
+    // follows the point — including a half-finished turn with a dangling tool
+    // call — is dropped with the parent's tail.
     const slice = selectSlice(branch, input.messageId);
     const title = forkTitle(agent.title);
 

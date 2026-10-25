@@ -138,7 +138,8 @@ describe("real-fork.points", () => {
     expect(result.sessionFile).toBe(sourceFile);
     expect(result.points.map((point) => point.messageId)).toEqual(["u2", "u1"]);
     expect(result.points[0].preview).toBe("second question");
-    expect(result.points[0].entries).toBe(4);
+    // Forking at u2 keeps [m1, u1, a1] — the point's own message is not kept.
+    expect(result.points[0].entries).toBe(3);
     expect(result.branchEntries).toBe(5);
   });
 
@@ -174,15 +175,16 @@ describe("real-fork.fork", () => {
     // The cache key is the header id, so the fork must keep the source's.
     expect(written.header.id).toBe(SESSION_ID);
     expect(written.header.parentSession).toBe(sourceFile);
-    // Every copied entry stays in order, and the fork is named after the parent.
-    expect(written.entries.slice(0, 4).map((entry) => entry.id)).toEqual(["m1", "u1", "a1", "u2"]);
-    expect(written.entries[4]).toMatchObject({ type: "session_info", name: "Parent task · fork" });
+    // Every copied entry stays in order, and the fork point's message is kept
+    // out of the copy — the fork rewrites it. The fork is named after the parent.
+    expect(written.entries.slice(0, 3).map((entry) => entry.id)).toEqual(["m1", "u1", "a1"]);
+    expect(written.entries[3]).toMatchObject({ type: "session_info", name: "Parent task · fork" });
     expect(result).toMatchObject({
       agentId: "forked",
       title: "Parent task · fork",
       cwd,
-      entries: 4,
-      dropped: 1,
+      entries: 3,
+      dropped: 2,
     });
   });
 
@@ -195,12 +197,13 @@ describe("real-fork.fork", () => {
       context(paseo),
     );
 
-    expect(result.entries).toBe(4);
-    expect(result.dropped).toBe(1);
+    // u2 ("second question") and a2 are dropped from the copy.
+    expect(result.entries).toBe(3);
+    expect(result.dropped).toBe(2);
     expect(calls[0].labels["real-fork.point"]).toBe("u2");
     const written = parseSession(await readFile(calls[0].sessionFile, "utf8"));
-    expect(written.entries.slice(0, 4).map((entry) => entry.id)).toEqual(["m1", "u1", "a1", "u2"]);
-    expect(written.entries).toHaveLength(5); // branch + session_info
+    expect(written.entries.slice(0, 3).map((entry) => entry.id)).toEqual(["m1", "u1", "a1"]);
+    expect(written.entries).toHaveLength(4); // branch + session_info
   });
 
   it("refuses an assistant fork point without importing anything", async () => {
@@ -227,9 +230,10 @@ describe("real-fork.fork", () => {
       context(paseo),
     );
 
-    // The cut drops the dangling tail: the copy ends at "first question".
-    expect(result.entries).toBe(2);
-    expect(result.dropped).toBe(2);
+    // The cut drops the point and the dangling tail: the copy ends at the
+    // model_change, before "first question".
+    expect(result.entries).toBe(1);
+    expect(result.dropped).toBe(3);
     expect(calls).toHaveLength(1);
   });
 

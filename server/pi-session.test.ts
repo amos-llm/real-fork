@@ -77,7 +77,7 @@ describe("activeBranch", () => {
 });
 
 describe("branchPoints", () => {
-  it("lists user messages newest first with their context size", () => {
+  it("lists user messages newest first with the entries a fork there would keep", () => {
     const branch = activeBranch([
       user("u1", null, "first"),
       assistant("a1", "u1", "answer"),
@@ -85,7 +85,8 @@ describe("branchPoints", () => {
     ]);
     const points = branchPoints(branch);
     expect(points.map((point) => point.entry.id)).toEqual(["u2", "u1"]);
-    expect(points.map((point) => point.entries)).toEqual([3, 1]);
+    // Fork at u2 keeps [u1, a1]; fork at u1 (the first entry) keeps nothing.
+    expect(points.map((point) => point.entries)).toEqual([2, 0]);
   });
 
   it("skips empty user messages", () => {
@@ -102,10 +103,17 @@ describe("sliceBranch", () => {
     assistant("a2", "u2", "answer two"),
   ]);
 
-  it("cuts at a user message and counts what the parent keeps", () => {
+  it("cuts just before a user message and counts what the parent keeps", () => {
+    const slice = sliceBranch(branch, "u2");
+    expect(slice?.branch.map((item) => item.id)).toEqual(["u1", "a1"]);
+    expect(slice?.point.id).toBe("u2");
+    expect(slice?.dropped).toBe(2);
+  });
+
+  it("keeps nothing when forking at the first branch entry", () => {
     const slice = sliceBranch(branch, "u1");
-    expect(slice?.branch.map((item) => item.id)).toEqual(["u1"]);
-    expect(slice?.dropped).toBe(3);
+    expect(slice?.branch).toEqual([]);
+    expect(slice?.dropped).toBe(4);
   });
 
   it("refuses assistant messages as fork points", () => {

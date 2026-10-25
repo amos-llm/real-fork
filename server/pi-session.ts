@@ -1,7 +1,7 @@
 /**
  * Pure pi session-file logic: parse a JSONL session, follow the active branch,
- * cut it at a user message, and render a new file. No Paseo or provider calls
- * live here, so the whole fork shape is unit-testable.
+ * cut it just before a user message, and render a new file. No Paseo or
+ * provider calls live here, so the whole fork shape is unit-testable.
  *
  * A pi session file is one JSON object per line:
  *
@@ -42,13 +42,16 @@ export interface ParsedSession {
 
 export interface BranchPoint {
   entry: PiSessionEntry;
-  /** Position of the entry inside the active branch (1-based). */
+  /** How many entries a fork at this point keeps — everything before it. */
   entries: number;
 }
 
 export interface BranchSlice {
+  /** Branch entries kept by the fork: root up to (not including) the point. */
   branch: PiSessionEntry[];
+  /** The user message the fork was taken at; deliberately kept out of the copy. */
   point: PiSessionEntry;
+  /** Entries dropped from the point on, including the point itself. */
   dropped: number;
 }
 
@@ -133,22 +136,27 @@ export function messagePreview(entry: PiSessionEntry, limit = 140): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-/** User messages on a branch, newest first, each with its context size. */
+/**
+ * User messages on a branch, newest first. `entries` is the size of the
+ * session a fork at that point would keep — everything before the message.
+ */
 export function branchPoints(branch: readonly PiSessionEntry[]): BranchPoint[] {
   const points: BranchPoint[] = [];
   branch.forEach((entry, index) => {
     if (entry.type !== "message") return;
     if (entry.message?.role !== "user") return;
     if (!textOf(entry.message.content).trim()) return;
-    points.push({ entry, entries: index + 1 });
+    points.push({ entry, entries: index });
   });
   return points.toReversed();
 }
 
 /**
- * Cut the branch so it ends at `messageId`. Returns null when that entry is not
- * a user message on the branch — Paseo's own message ids for assistant rows are
- * provider-derived, so a fork point must be anchored to a user message.
+ * Cut the branch so it ends just before `messageId`. Returns null when that
+ * entry is not a user message on the branch — Paseo's own message ids for
+ * assistant rows are provider-derived, so a fork point must be anchored to a
+ * user message. The point itself is dropped: the fork exists to rewrite that
+ * message, so the copy ends on the settled state right before it.
  */
 export function sliceBranch(
   branch: readonly PiSessionEntry[],
@@ -159,9 +167,9 @@ export function sliceBranch(
   const point = branch[index];
   if (point.type !== "message" || point.message?.role !== "user") return null;
   return {
-    branch: branch.slice(0, index + 1),
+    branch: branch.slice(0, index),
     point,
-    dropped: branch.length - index - 1,
+    dropped: branch.length - index,
   };
 }
 
