@@ -9,8 +9,8 @@ import {
   forkRpc,
   type ForkPoint,
 } from "../shared/fork";
+import { importIntoWorkspace, type ImportSession } from "./daemon-import";
 import { buildForkFile, forkFilePath, writeForkFile } from "./fork-file";
-import { runPaseoImport, type ImportSession } from "./paseo-import";
 import {
   activeBranch,
   branchPoints,
@@ -37,10 +37,15 @@ import { resolveSessionFile } from "./pi-session-file";
  *     provider as the prompt cache key. Measured on opencode-go/deepseek: same id
  *     → 248k cached input and ~$0.0008; fresh id → 0 cached and ~$0.037.
  *
- * The file is handed to Paseo with `paseo import`, which is the daemon's real
- * import path: it opens the session from the file, so the history is replayed
- * into the timeline. Creating an agent and patching its file afterwards does not
- * work — the daemon keeps the live pi process, which never reloads that file.
+ * The file is handed to the daemon's import path (the same one `paseo import`
+ * drives), so the session opens from the file and the history replays into the
+ * timeline. Creating an agent and patching its file afterwards does not work —
+ * the daemon keeps the live pi process, which never reloads that file.
+ *
+ * The import targets a workspace the handler just created for the fork (same
+ * directory, new sidebar entry): the daemon's untargeted import always lands
+ * in the oldest active workspace for the cwd — the parent's — where the fork
+ * would be a tab, not a conversation of its own.
  */
 
 async function listAgent(paseo: PaseoApi, agentId: string): Promise<PaseoAgent | null> {
@@ -62,13 +67,8 @@ export function forkTitle(title: string | null): string {
   return base.endsWith("· fork") ? base : `${base} · fork`;
 }
 
-/** Branch entries up to `messageId`, or the whole branch when it is omitted. */
-function selectSlice(branch: readonly PiSessionEntry[], messageId: string | null) {
-  if (messageId === null) {
-    const point = branch.at(-1);
-    if (!point) throw new Error("This agent has no session entries to fork yet");
-    return { branch: [...branch], point, dropped: 0 };
-  }
+/** Branch entries up to and including `messageId` (a user message). */
+function selectSlice(branch: readonly PiSessionEntry[], messageId: string) {
   const slice = sliceBranch(branch, messageId);
   if (!slice) {
     const points = branchPoints(branch);
@@ -106,12 +106,16 @@ export function createForkPointsHandler() {
 }
 
 export function createForkHandler(options: { importSession?: ImportSession } = {}) {
-  const importSession = options.importSession ?? runPaseoImport;
+  const importSession = options.importSession ?? importIntoWorkspace;
   return async (input: RpcInput<typeof forkRpc>, context: PluginHandlerContext) => {
     const agent = await requirePiAgent(context.paseo, input.agentId);
     const sourceFile = await resolveSessionFile(agent.persistence);
     const source = parseSession(await readFile(sourceFile, "utf8"));
-    const slice = selectSlice(activeBranch(source.entries), input.messageId ?? null);
+    const branch = activeBranch(source.entries);
+    // Forking always cuts at a user message, so the copy ends on a settled
+    // state: whatever follows the point — including a half-finished turn with
+    // a dangling tool call — is dropped with the parent's tail.
+    const slice = selectSlice(branch, input.messageId);
     const title = forkTitle(agent.title);
 
     const fork = buildForkFile({
@@ -126,15 +130,33 @@ export function createForkHandler(options: { importSession?: ImportSession } = {
       renderSession,
     );
 
-    const imported = await importSession({
-      sessionFile: targetFile,
-      cwd: agent.cwd,
+    // A fork is a new conversation: give it its own workspace (its own sidebar
+    // entry) in the same directory, then import the prepared session into it.
+    const workspace = await context.paseo.workspaces.create({
+      source: { kind: "directory", path: agent.cwd },
       title,
-      labels: {
-        [FORK_SOURCE_LABEL]: agent.id,
-        ...(slice.point.id ? { [FORK_POINT_LABEL]: slice.point.id } : {}),
-      },
     });
+    let imported;
+    try {
+      imported = await importSession({
+        sessionFile: targetFile,
+        cwd: agent.cwd,
+        workspaceId: workspace.id,
+        title,
+        labels: {
+          [FORK_SOURCE_LABEL]: agent.id,
+          ...(slice.point.id ? { [FORK_POINT_LABEL]: slice.point.id } : {}),
+        },
+      });
+    } catch (error) {
+      // Do not leave an empty workspace behind when the import fails.
+      await workspace.archive().catch((cleanupError) => {
+        console.warn(
+          `[real-fork] failed to archive half-created workspace ${workspace.id}: ${String(cleanupError)}`,
+        );
+      });
+      throw error;
+    }
 
     console.log(
       `[real-fork] forked ${imported.agentId} from ${agent.id}: ${slice.branch.length} entries, ${slice.dropped} dropped, cache key ${fork.header.id ?? "?"}`,

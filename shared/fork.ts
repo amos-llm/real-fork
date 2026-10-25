@@ -35,7 +35,7 @@ export const forkPointsRpc = defineRpc({
     agentId: z.string(),
     cwd: z.string(),
     sessionFile: z.string(),
-    /** Entries on the active branch, i.e. how many a full copy would keep. */
+    /** Entries on the active branch (context size at the newest point). */
     branchEntries: z.number().int().nonnegative(),
     points: z.array(forkPointSchema),
   }),
@@ -43,15 +43,15 @@ export const forkPointsRpc = defineRpc({
 
 /**
  * Fork an agent by writing a new pi session file and reusing it for a new agent.
- * `messageId` omitted (or null) copies the whole active branch, so the fork
- * starts exactly where the source left off; a user message id rewinds to just
- * before that question.
+ * The copy is the active branch cut at `messageId` (a user message): the fork
+ * re-answers that question, and anything after the point — including a
+ * half-finished turn — is dropped, so the copy is always a settled session.
  */
 export const forkRpc = defineRpc({
   name: "real-fork.fork",
   input: z.object({
     agentId: z.string().min(1),
-    messageId: z.string().min(1).nullable().optional(),
+    messageId: z.string().min(1),
   }),
   output: z.object({
     agentId: z.string(),

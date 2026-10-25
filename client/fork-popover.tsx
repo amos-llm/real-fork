@@ -5,50 +5,13 @@ import { useCallback, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ForkPoint, ForkResult } from "../shared/fork";
 import { forkPointsRpc, forkRpc } from "../shared/fork";
-import { fmtEntries, fmtPointMeta } from "./fork-format";
+import { fmtPointMeta } from "./fork-format";
 import { forkPointsQueryKey } from "./fork-query";
 
 const LIST_STYLE = { gap: 0 } as const;
 const ROW_STYLE = { paddingVertical: 8, gap: 2 } as const;
 const HEADER_STYLE = { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 };
-
-interface KeepAllRowProps {
-  entries: number;
-  theme: PluginButtonContentProps["theme"];
-  disabled: boolean;
-  onPick: () => void;
-}
-
-/** First row: copy the whole branch, so the fork starts where the source stopped. */
-function KeepAllRow({ entries, theme, disabled, onPick }: KeepAllRowProps) {
-  const styles = useMemo(
-    () => ({
-      row: {
-        ...ROW_STYLE,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border,
-        opacity: disabled ? 0.5 : 1,
-      },
-      title: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
-      meta: { color: theme.colors.foregroundMuted, fontSize: 11 },
-    }),
-    [theme, disabled],
-  );
-  const meta = useMemo(() => `${fmtEntries(entries)} · starts where this agent stopped`, [entries]);
-
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Fork keeping the whole conversation"
-      disabled={disabled}
-      onPress={onPick}
-      style={styles.row}
-    >
-      <Text style={styles.title}>Keep everything</Text>
-      <Text style={styles.meta}>{meta}</Text>
-    </Pressable>
-  );
-}
+const SKELETON_ROWS = [0, 1, 2, 3, 4, 5, 6, 7];
 
 interface PointRowProps {
   point: ForkPoint;
@@ -109,10 +72,9 @@ function PointRow({ point, latest, theme, now, disabled, onPick }: PointRowProps
  * (280–420px wide, 440px tall), so this is just the list of fork points plus
  * the outcome of the last fork.
  *
- * A fork writes a new pi session file holding the active branch (optionally cut
- * at a chosen user message) and reuses it for a new agent in the same
- * workspace, so the provider still sees the source prefix and its cache answers
- * the first turn.
+ * A fork writes a new pi session file holding the active branch cut at a
+ * chosen user message and reuses it for a new agent in a new workspace, so the
+ * provider still sees the source prefix and its cache answers the first turn.
  */
 export function ForkPopover(props: PluginButtonContentProps) {
   const { theme, close } = props;
@@ -139,9 +101,9 @@ export function ForkPopover(props: PluginButtonContentProps) {
   });
 
   const handlePick = useCallback(
-    (messageId: string | null) => {
+    (messageId: string) => {
       if (!agentId) return;
-      setBusyId(messageId ?? "end");
+      setBusyId(messageId);
       setError(null);
       setResult(null);
       void runFork({ agentId, messageId })
@@ -163,10 +125,6 @@ export function ForkPopover(props: PluginButtonContentProps) {
     close();
   }, [close]);
 
-  const handleKeepAll = useCallback(() => {
-    handlePick(null);
-  }, [handlePick]);
-
   const handleForkAgain = useCallback(() => {
     setResult(null);
     setError(null);
@@ -178,6 +136,7 @@ export function ForkPopover(props: PluginButtonContentProps) {
       title: { color: theme.colors.foreground, fontWeight: "600" as const },
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 },
       error: { color: theme.colors.statusDanger, fontSize: 12 },
+      skeleton: { height: 40, borderRadius: 6, backgroundColor: theme.colors.surface2 },
       successTitle: {
         color: theme.colors.statusSuccess,
         fontSize: 13,
@@ -210,8 +169,8 @@ export function ForkPopover(props: PluginButtonContentProps) {
           {`${result.entries} entries kept · ${result.dropped} dropped · ${result.agentId.slice(0, 8)}`}
         </Text>
         <Text style={styles.muted}>
-          It is at the top of this workspace&apos;s agent list, with the whole conversation and the
-          source cache key.
+          It is a new entry in the sidebar — its own workspace in the same directory — with the
+          whole conversation and the source cache key.
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -237,30 +196,29 @@ export function ForkPopover(props: PluginButtonContentProps) {
     <View style={LIST_STYLE}>
       <Text style={styles.title}>Fork without losing the cache</Text>
       <Text style={styles.intro}>
-        Copies the pi session (optionally cut at a user message), then resumes it in a new agent —
-        same cwd, model and tools, so the provider prefix cache still applies.
+        Copies the pi session, cut at a user message, then resumes it in a new agent — same cwd,
+        model and tools, so the provider prefix cache still applies.
       </Text>
 
       {agentId === null ? <Text style={styles.error}>Open this pill from an agent.</Text> : null}
       {busyId !== null ? <Text style={styles.muted}>Forking…</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {isPending && agentId !== null ? (
-        <Text style={styles.muted}>Reading the pi session…</Text>
+        // The host sizes the popover from its first render, so a cold open must
+        // already reserve near-final height — otherwise the box opens small and
+        // only grows (or not at all) when the points arrive.
+        <View style={LIST_STYLE}>
+          <Text style={styles.muted}>Reading the pi session…</Text>
+          {SKELETON_ROWS.map((row) => (
+            <View key={row} style={styles.skeleton} />
+          ))}
+        </View>
       ) : null}
       {loadError ? (
         <Text style={styles.error}>
           {loadError instanceof Error ? loadError.message : String(loadError)}
         </Text>
       ) : null}
-      {!isPending && !loadError && agentId !== null && data ? (
-        <KeepAllRow
-          entries={data.branchEntries}
-          theme={theme}
-          disabled={disabled}
-          onPick={handleKeepAll}
-        />
-      ) : null}
-
       {points.map((point, index) => (
         <PointRow
           key={point.messageId}

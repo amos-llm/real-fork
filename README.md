@@ -19,11 +19,23 @@ Against `opencode-go/deepseek-v4.1-flash`, forking this session's 248k-token bra
 ## What it does
 
 1. Resolve the source session file — Paseo records it as `persistence.nativeHandle`, with an id scan of `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`) as fallback.
-2. Follow `parentId` from the active leaf to the root; keep the whole branch, or cut it just before a chosen user message.
+2. Follow `parentId` from the active leaf to the root and cut it at a chosen user message.
 3. Write `<cwd>/.pi/forks/<timestamp>_<suffix>.jsonl`: the source header (id kept, `parentSession` recorded) + the copied entries + a `session_info` naming the fork `<parent title> · fork`. `session_info` never reaches the model, so naming costs no context.
-4. `paseo import <file> --provider pi --cwd <cwd> --label real-fork.source=… --label real-fork.point=…`.
+4. Create a new workspace in the same directory (its own sidebar entry), then hand the file to the daemon's import path **targeting that workspace**: the fork opens from the file, so the timeline replays the whole history.
 
-Step 4 matters: the daemon's import path opens the agent **from that file**, which is why the fork's timeline replays the whole history. (Creating an agent and then patching its session file does not work — the daemon keeps the live pi process, which never reloads the patched file.)
+Step 4 matters in two ways. First, the import path opens the agent **from that file**, which is why the fork's timeline replays the whole history. (Creating an agent and then patching its session file does not work — the daemon keeps the live pi process, which never reloads the patched file.) Second, the import must target the new workspace: an untargeted import always lands in the oldest active workspace for the cwd — the parent's — where the fork would be a tab, not a conversation of its own. The `paseo` CLI cannot target a workspace, so the plugin drives the daemon client directly (same wire request, one extra field).
+
+## Installing
+
+Directory plugins are built in place, so the plugin's own dependencies must be present before the daemon compiles it:
+
+```bash
+cd real-fork
+npm install               # the daemon build resolves types from node_modules
+paseo plugin install ~/real-fork
+```
+
+If the daemon reports `Could not resolve type dependency "@getpaseo/client"`, `npm install` was skipped (or the checkout is fresh).
 
 ## Using it
 
@@ -33,22 +45,19 @@ A composer pill on pi agents only:
 Real fork  ▾
 ┌──────────────────────────────────────────────┐
 │ Fork without losing the cache                │
-│ Copies the pi session (optionally cut at a   │
-│ user message), same cache key, same cwd      │
-│ Keep everything                              │
-│ 399 entries · starts where this agent stopped │
+│ Copies the pi session, cut at a user         │
+│ message, same cache key, same cwd            │
 │ latest  168 entries · 2m ago                 │
 │ How does the daemon pick a provider?         │
 │ 163 entries · 6m ago                         │
-│ ‹Forked 399 entries (0 dropped)›              │
-│ ✓ Parent task · fork · appears in this list   │
+│ ‹Forked 168 entries (1 dropped)›              │
+│ ✓ Parent task · fork · new sidebar entry      │
 └──────────────────────────────────────────────┘
 ```
 
-- **Keep everything** copies the whole active branch: the fork starts where the source stopped.
-- **A user message row** rewinds: the copy ends just before that question.
+- **A user message row** forks there: the copy ends at that question, which the fork re-answers. Anything after the point — including a half-finished turn — stays with the parent.
 
-Either way the parent is untouched and the fork appears in the same workspace as `<title> · fork`.
+Either way the parent is untouched and the fork appears in the sidebar as its own entry, `<title> · fork`, in the same directory.
 
 ## Limits
 
@@ -57,7 +66,7 @@ Either way the parent is untouched and the fork appears in the same workspace as
 - **Cache TTL.** Fork while the source prefix is still cached (Anthropic 5 min / 1 h; OpenAI-compatible gateways a few minutes of idleness). A fork from an hour ago re-prefills once, then continues normally.
 - **Two sessions share one id.** The fork's header keeps the parent's id, so pi (if you point it at both files) sees the same id twice. The fork file lives under `<cwd>/.pi/forks`, outside pi's session directory, so `pi --resume` does not list it.
 - **Model/thinking come from the file** (the fork's last `model_change` / `thinking_level_change`), not from Paseo's dropdown. Change them after the fork if you need to.
-- **The Paseo CLI must be runnable** from the daemon (`paseo` on PATH, or set `PASEO_CLI`). No other dependency is added.
+- **No extra dependency.** The fork drives the local daemon over its WebSocket API (the same client the `paseo` CLI uses), so the CLI is not required to be on the daemon's PATH.
 
 ## Layout
 
@@ -67,7 +76,7 @@ server/fork-agent.ts    orchestration: resolve source, slice the branch, hand of
 server/fork-file.ts     fork path + header/entries (id kept, parentSession, session_info)
 server/pi-session.ts    pure JSONL parse / branch / slice / render (tested)
 server/pi-session-file.ts  session-file discovery (nativeHandle, id scan, env overrides)
-server/paseo-import.ts  `paseo import` runner (injectable for tests)
+server/daemon-import.ts   daemon-client import into the fork's own workspace (injectable for tests)
 index.client.tsx        one composer pill per pi agent
 client/fork-popover.tsx fork-point picker + status
 client/fork-format.ts   relative time / size labels (tested)
@@ -83,5 +92,6 @@ npm install
 npm run check        # typecheck + lint + test + format:check
 npm run format       # oxfmt .
 paseo plugin install ~/real-fork
-paseo plugin logs real-fork     # one line per fork: entries, dropped, cache key
+paseo plugin reload real-fork     # after editing a directory plugin
+paseo plugin logs real-fork       # one line per fork: entries, dropped, cache key
 ```

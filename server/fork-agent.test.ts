@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { createForkHandler, createForkPointsHandler, forkTitle } from "./fork-agent";
 import { FORK_DIR } from "./fork-file";
 import { parseSession, type PiSessionEntry } from "./pi-session";
+import { forkRpc } from "../shared/fork";
 
 const SESSION_ID = "01a17146-3194-7754-b8cd-5b39b16cebb0";
 
@@ -42,9 +43,31 @@ const SOURCE_ENTRIES: PiSessionEntry[] = [
   message("a2", "u2", "assistant", "second answer"),
 ];
 
+/** Same branch, but the last assistant message issued a tool call with no result yet. */
+const DANGLING_ENTRIES: PiSessionEntry[] = [
+  { type: "model_change", id: "m1", parentId: null, provider: "opencode-go", modelId: "m" },
+  message("u1", "m1", "user", "first question"),
+  message("a1", "u1", "assistant", "first answer"),
+  {
+    type: "message",
+    id: "a2",
+    parentId: "a1",
+    timestamp: "2026-01-01T00:00:02.000Z",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "let me check" },
+        { type: "toolCall", id: "tc1", name: "bash", arguments: { command: "sleep 999" } },
+      ],
+    },
+  },
+];
+
 interface StubOptions {
   provider?: string;
   title?: string | null;
+  entries?: PiSessionEntry[];
+  onWorkspaceArchive?: () => void;
 }
 
 /**
@@ -54,7 +77,7 @@ interface StubOptions {
 async function makeAgent(options: StubOptions = {}) {
   const cwd = await mkdtemp(path.join(tmpdir(), "real-fork-cwd-"));
   const sourceFile = path.join(cwd, "session.jsonl");
-  const lines = [header(cwd), ...SOURCE_ENTRIES];
+  const lines = [header(cwd), ...(options.entries ?? SOURCE_ENTRIES)];
   await writeFile(sourceFile, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
   const parent = {
     id: "parent",
@@ -69,6 +92,20 @@ async function makeAgent(options: StubOptions = {}) {
   };
   const paseo = {
     agents: { list: async () => ({ entries: [{ agent: parent }] }) },
+    workspaces: {
+      create: async () => ({
+        id: "ws-fork",
+        archive: async () => {
+          options.onWorkspaceArchive?.();
+          return {
+            requestId: "req-archive",
+            workspaceId: "ws-fork",
+            archivedAt: "2026-01-01T00:00:02.000Z",
+            error: null,
+          };
+        },
+      }),
+    },
   } as unknown as PaseoApi;
   return { cwd, sourceFile, paseo };
 }
@@ -76,6 +113,7 @@ async function makeAgent(options: StubOptions = {}) {
 interface ImportCall {
   sessionFile: string;
   cwd: string;
+  workspaceId: string;
   title: string;
   labels: Record<string, string>;
 }
@@ -118,15 +156,17 @@ describe("real-fork.fork", () => {
     const { calls, importSession } = recorder();
 
     const result = await createForkHandler({ importSession })(
-      { agentId: "parent" },
+      { agentId: "parent", messageId: "u2" },
       context(paseo),
     );
 
     expect(calls).toHaveLength(1);
     const [call] = calls;
     expect(call.cwd).toBe(cwd);
+    // The fork gets its own workspace — its own sidebar entry, not a tab in the parent's.
+    expect(call.workspaceId).toBe("ws-fork");
     expect(call.title).toBe("Parent task · fork");
-    expect(call.labels).toEqual({ "real-fork.source": "parent", "real-fork.point": "a2" });
+    expect(call.labels).toEqual({ "real-fork.source": "parent", "real-fork.point": "u2" });
     // The fork file lives in the workspace's own `.pi` area, not in pi's session list.
     expect(call.sessionFile.startsWith(path.join(cwd, FORK_DIR))).toBe(true);
 
@@ -135,20 +175,14 @@ describe("real-fork.fork", () => {
     expect(written.header.id).toBe(SESSION_ID);
     expect(written.header.parentSession).toBe(sourceFile);
     // Every copied entry stays in order, and the fork is named after the parent.
-    expect(written.entries.slice(0, 5).map((entry) => entry.id)).toEqual([
-      "m1",
-      "u1",
-      "a1",
-      "u2",
-      "a2",
-    ]);
-    expect(written.entries[5]).toMatchObject({ type: "session_info", name: "Parent task · fork" });
+    expect(written.entries.slice(0, 4).map((entry) => entry.id)).toEqual(["m1", "u1", "a1", "u2"]);
+    expect(written.entries[4]).toMatchObject({ type: "session_info", name: "Parent task · fork" });
     expect(result).toMatchObject({
       agentId: "forked",
       title: "Parent task · fork",
       cwd,
-      entries: 5,
-      dropped: 0,
+      entries: 4,
+      dropped: 1,
     });
   });
 
@@ -179,15 +213,37 @@ describe("real-fork.fork", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("propagates an import failure", async () => {
-    const { paseo } = await makeAgent();
+  it("requires a fork point in the RPC input", () => {
+    expect(forkRpc.input.safeParse({ agentId: "parent" }).success).toBe(false);
+    expect(forkRpc.input.safeParse({ agentId: "parent", messageId: "u1" }).success).toBe(true);
+  });
+
+  it("cuts the mid-turn tail when forking at a user message", async () => {
+    const { paseo } = await makeAgent({ entries: DANGLING_ENTRIES });
+    const { calls, importSession } = recorder();
+
+    const result = await createForkHandler({ importSession })(
+      { agentId: "parent", messageId: "u1" },
+      context(paseo),
+    );
+
+    // The cut drops the dangling tail: the copy ends at "first question".
+    expect(result.entries).toBe(2);
+    expect(result.dropped).toBe(2);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("propagates an import failure and archives the half-created workspace", async () => {
+    let archived = 0;
+    const { paseo } = await makeAgent({ onWorkspaceArchive: () => (archived += 1) });
     const importSession = async () => {
       throw new Error("paseo import failed: no such binary");
     };
 
     await expect(
-      createForkHandler({ importSession })({ agentId: "parent" }, context(paseo)),
+      createForkHandler({ importSession })({ agentId: "parent", messageId: "u2" }, context(paseo)),
     ).rejects.toThrow(/import failed/u);
+    expect(archived).toBe(1);
   });
 
   it("titles the fork after the parent exactly once", () => {

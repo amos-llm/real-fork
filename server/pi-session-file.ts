@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -93,9 +93,4 @@ export async function resolveSessionFile(
     throw new Error(`Could not find the pi session file for session ${sessionId}`);
   }
   return found;
-}
-
-/** Write a session file in place (the caller restarts the provider afterwards). */
-export async function replaceSessionFile(file: string, text: string): Promise<void> {
-  await writeFile(file, text, "utf8");
 }
