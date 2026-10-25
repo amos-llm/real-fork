@@ -3,15 +3,13 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import type { ForkPoint, ForkResult } from "../shared/fork";
+import type { ForkPoint } from "../shared/fork";
 import { forkPointsRpc, forkRpc } from "../shared/fork";
 import { fmtPointMeta } from "./fork-format";
 import { forkPointsQueryKey } from "./fork-query";
 
 const LIST_STYLE = { gap: 0 } as const;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5, 6, 7];
-
-type PointKind = "user" | "tool";
 
 interface PointRowProps {
   point: ForkPoint;
@@ -20,7 +18,7 @@ interface PointRowProps {
   theme: PluginButtonContentProps["theme"];
   now: number;
   disabled: boolean;
-  onPick: (messageId: string, kind: PointKind) => void;
+  onPick: (messageId: string) => void;
 }
 
 /**
@@ -29,7 +27,6 @@ interface PointRowProps {
  * and nested tool rows carry a thin left guide instead.
  */
 function PointRow({ point, nested, theme, now, disabled, onPick }: PointRowProps) {
-  const kind: PointKind = nested ? "tool" : "user";
   const styles = useMemo(
     () => ({
       row: {
@@ -61,8 +58,8 @@ function PointRow({ point, nested, theme, now, disabled, onPick }: PointRowProps
   );
 
   const handlePress = useCallback(() => {
-    onPick(point.messageId, kind);
-  }, [onPick, point.messageId, kind]);
+    onPick(point.messageId);
+  }, [onPick, point.messageId]);
 
   const meta = useMemo(
     () => fmtPointMeta(point.entries, point.at, now),
@@ -147,8 +144,9 @@ function TurnGroupHeader({ turnId, count, open, theme, onToggle }: TurnGroupHead
 
 /**
  * Composer-pill popover body. The host owns anchoring, scrolling and padding
- * (280–420px wide, 440px tall), so this is just the list of fork points plus
- * the outcome of the last fork.
+ * (280–420px wide, 440px tall), so this is just the list of fork points.
+ * A successful fork shows no extra screen — the new agent simply appears in
+ * the sidebar and the list stays open for another pick.
  *
  * The list is one interleaved timeline, newest first: a user row forks just
  * before that message (the fork rewrites it in its composer); under each user
@@ -159,13 +157,12 @@ function TurnGroupHeader({ turnId, count, open, theme, onToggle }: TurnGroupHead
  * the first turn.
  */
 export function ForkPopover(props: PluginButtonContentProps) {
-  const { theme, close } = props;
+  const { theme } = props;
   const agentId = props.context === "agent" ? props.agentId : null;
   const fetchPoints = useRpc(forkPointsRpc);
   const runFork = useRpc(forkRpc);
 
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [result, setResult] = useState<{ fork: ForkResult; kind: PointKind } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openTurns, setOpenTurns] = useState<ReadonlySet<string>>(() => new Set());
 
@@ -193,16 +190,11 @@ export function ForkPopover(props: PluginButtonContentProps) {
   }, []);
 
   const handlePick = useCallback(
-    (messageId: string, kind: PointKind) => {
+    (messageId: string) => {
       if (!agentId) return;
       setBusyId(messageId);
       setError(null);
-      setResult(null);
       void runFork({ agentId, messageId })
-        .then((forked) => {
-          setResult({ fork: forked, kind });
-          return undefined;
-        })
         .catch((cause: unknown) => {
           setError(cause instanceof Error ? cause.message : String(cause));
         })
@@ -212,15 +204,6 @@ export function ForkPopover(props: PluginButtonContentProps) {
     },
     [agentId, runFork],
   );
-
-  const handleClose = useCallback(() => {
-    close();
-  }, [close]);
-
-  const handleForkAgain = useCallback(() => {
-    setResult(null);
-    setError(null);
-  }, []);
 
   const styles = useMemo(
     () => ({
@@ -264,73 +247,12 @@ export function ForkPopover(props: PluginButtonContentProps) {
         paddingTop: 6,
         paddingBottom: 6,
       },
-      successTitle: {
-        color: theme.colors.statusSuccess,
-        fontSize: 13,
-        fontWeight: "600" as const,
-        marginBottom: 6,
-      },
-      agentTitle: {
-        color: theme.colors.foreground,
-        fontSize: 14,
-        fontWeight: "600" as const,
-        marginBottom: 8,
-      },
-      resultNotes: { gap: 6, marginBottom: 12 },
-      buttons: { gap: 8 },
-      button: {
-        paddingVertical: 8,
-        alignItems: "center" as const,
-        borderRadius: 8,
-        backgroundColor: theme.colors.surface2,
-      },
-      buttonText: { color: theme.colors.foreground, fontSize: 13, fontWeight: "500" as const },
     }),
     [theme],
   );
 
   const points = data?.points ?? [];
   const disabled = busyId !== null;
-
-  // The fork point list can be long, so the outcome replaces it instead of being
-  // appended below the fold.
-  if (result) {
-    const { fork, kind } = result;
-    return (
-      <View style={LIST_STYLE}>
-        <Text style={styles.successTitle}>Forked ✓</Text>
-        <Text style={styles.agentTitle}>{fork.title ?? "New agent"}</Text>
-        <View style={styles.resultNotes}>
-          <Text style={styles.muted}>
-            {`${fork.entries} entries kept · ${fork.dropped} dropped · ${fork.agentId.slice(0, 8)}`}
-          </Text>
-          <Text style={styles.muted}>
-            {kind === "user"
-              ? "It is a new entry in the sidebar — its own workspace in the same directory — with the conversation up to that point and the source cache key. Send the rewritten message in its input box."
-              : "It is a new entry in the sidebar — its own workspace in the same directory — with everything up to and including that tool result, and the source cache key. Send your new instruction in its input box and the fork picks the turn up from there."}
-          </Text>
-        </View>
-        <View style={styles.buttons}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Fork again"
-            onPress={handleForkAgain}
-            style={styles.button}
-          >
-            <Text style={styles.buttonText}>Fork again</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close"
-            onPress={handleClose}
-            style={styles.button}
-          >
-            <Text style={styles.buttonText}>Close</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
 
   return (
     <View style={LIST_STYLE}>
