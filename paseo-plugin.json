@@ -4,5 +4,6 @@
   "description": "Fork a pi agent at the provider-session level, so the provider prefix cache is reused",
   "requirements": {
     "paseo": ">=0.12.0"
-  }
+  },
+  "build": [["npm", "install", "--omit=dev"]]
 }

@@ -47,7 +47,7 @@ Real fork  ▾
 │ Fork without losing the cache                │
 │ Copies the pi session, cut at a user         │
 │ message, same cache key, same cwd            │
-│ latest  168 entries · 2m ago                 │
+│ 168 entries · 2m ago                         │
 │ How does the daemon pick a provider?         │
 │ 163 entries · 6m ago                         │
 │ ‹Forked 168 entries (1 dropped)›              │

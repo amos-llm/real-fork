@@ -15,14 +15,13 @@ const SKELETON_ROWS = [0, 1, 2, 3, 4, 5, 6, 7];
 
 interface PointRowProps {
   point: ForkPoint;
-  latest: boolean;
   theme: PluginButtonContentProps["theme"];
   now: number;
   disabled: boolean;
   onPick: (messageId: string) => void;
 }
 
-function PointRow({ point, latest, theme, now, disabled, onPick }: PointRowProps) {
+function PointRow({ point, theme, now, disabled, onPick }: PointRowProps) {
   const styles = useMemo(
     () => ({
       row: { ...ROW_STYLE, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
@@ -32,7 +31,6 @@ function PointRow({ point, latest, theme, now, disabled, onPick }: PointRowProps
         opacity: disabled ? 0.5 : 1,
       },
       meta: { color: theme.colors.foregroundMuted, fontSize: 11 },
-      badge: { color: theme.colors.accent, fontSize: 11, fontWeight: "600" as const },
     }),
     [theme, disabled],
   );
@@ -55,7 +53,6 @@ function PointRow({ point, latest, theme, now, disabled, onPick }: PointRowProps
       style={styles.row}
     >
       <View style={HEADER_STYLE}>
-        {latest ? <Text style={styles.badge}>latest</Text> : null}
         <Text style={styles.meta} numberOfLines={1}>
           {meta}
         </Text>
@@ -219,11 +216,10 @@ export function ForkPopover(props: PluginButtonContentProps) {
           {loadError instanceof Error ? loadError.message : String(loadError)}
         </Text>
       ) : null}
-      {points.map((point, index) => (
+      {points.map((point) => (
         <PointRow
           key={point.messageId}
           point={point}
-          latest={index === 0}
           theme={theme}
           // Ages are measured against when the list was fetched, so rendering
           // never reads the clock.
