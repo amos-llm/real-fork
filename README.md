@@ -19,7 +19,9 @@ Against `opencode-go/deepseek-v4.1-flash`, forking this session's 248k-token bra
 ## What it does
 
 1. Resolve the source session file — Paseo records it as `persistence.nativeHandle`, with an id scan of `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`) as fallback.
-2. Follow `parentId` from the active leaf to the root and cut it **just before** a chosen user message. The chosen message is the one being rewritten, so the copy ends on the settled state right before it; you then send the rewritten version in the fork's input box.
+2. Follow `parentId` from the active leaf to the root and cut it at a chosen **fork point**. There are two kinds:
+   - **A user message** — cut just before it. The chosen message is the one being rewritten, so the copy ends on the settled state right before it; you then send the rewritten version in the fork's input box.
+   - **A completed tool call** — cut just after it. The copy keeps that tool call and its result, so the fork re-enters the turn right there and you redirect it from that point. This is the same state pi's own steering produces, so the provider accepts the fork's first turn. A batch is only offered when every call in it has a result — a cut that would dangle a tool call is refused.
 3. Write `<cwd>/.pi/forks/<timestamp>_<suffix>.jsonl`: the source header (id kept, `parentSession` recorded) + the copied entries + a `session_info` naming the fork `<parent title> · fork`. `session_info` never reaches the model, so naming costs no context.
 4. Create a new workspace in the same directory (its own sidebar entry), then hand the file to the daemon's import path **targeting that workspace**: the fork opens from the file, so the timeline replays the whole history.
 
@@ -43,19 +45,40 @@ A composer pill on pi agents only:
 
 ```
 Real fork  ▾
-┌──────────────────────────────────────────────┐
-│ Fork without losing the cache                │
-│ Copies the pi session, cut just before a     │
-│ user message — rewrite it in the fork        │
-│ 168 entries · 2m ago                         │
-│ How does the daemon pick a provider?         │
-│ 163 entries · 6m ago                         │
-│ ‹Forked 168 entries (1 dropped)›              │
-│ ✓ Parent task · fork · new sidebar entry      │
-└──────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ Fork without losing the cache                              │
+│ Pick a user message to rewrite it, or expand a turn's      │
+│ tool calls to redirect the turn after one of them.         │
+│                                                            │
+│ ╭────────────────────────────────────────────────────────╮ │
+│ │ How does the daemon pick a provider? 168 entries·2m ago│ │
+│ │ ( 3 TOOL CALLS ▶ )                                     │ │
+│ ╰────────────────────────────────────────────────────────╯ │
+│ ╭────────────────────────────────────────────────────────╮ │
+│ │ Wire the retry path                   163 entries·6m ago│ │
+│ │ ( 2 TOOL CALLS ▼ )                                     │ │
+│ │   read · src/retry.ts             161 entries · 5m ago  │ │
+│ │   bash · curl -s localhost:8080   160 entries · 5m ago  │ │
+│ ╰────────────────────────────────────────────────────────╯ │
+└────────────────────────────────────────────────────────────┘
 ```
 
-- **A user message row** forks there: the copy ends just before that question, so you rewrite it in the fork's input box and send it. Anything from the point on — including a half-finished turn — stays with the parent.
+After picking a point the list is replaced by the result:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Forked ✓                                                   │
+│ Parent task · fork                                         │
+│ 168 entries kept · 1 dropped · a1b2c3d4                    │
+│ It is a new entry in the sidebar — its own workspace…      │
+│                                                            │
+│   [ Fork again ]                                           │
+│   [ Close ]                                                │
+└────────────────────────────────────────────────────────────┘
+```
+
+- **A user message row** forks just before that question: the copy ends there, so you rewrite the message in the fork's input box and send it. Anything from the point on — including a half-finished turn — stays with the parent.
+- **A tool call row** (its turn's `N TOOL CALLS` chip is collapsed by default — tap the chip to expand) forks just after that call: the copy keeps the call and its result, so you send a new instruction in the fork's input box and the turn resumes from that point instead of from the top.
 
 Either way the parent is untouched and the fork appears in the sidebar as its own entry, `<title> · fork`, in the same directory.
 

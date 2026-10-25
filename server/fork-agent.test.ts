@@ -35,11 +35,87 @@ function message(
   };
 }
 
+/** An assistant message issuing `calls` = [toolCallId, toolName, args?], in order. */
+function assistantToolCall(
+  id: string,
+  parentId: string | null,
+  calls: ReadonlyArray<readonly [string, string, Record<string, unknown>?]>,
+): PiSessionEntry {
+  return {
+    type: "message",
+    id,
+    parentId,
+    timestamp: "2026-01-01T00:00:02.000Z",
+    message: {
+      role: "assistant",
+      content: calls.map(([callId, name, args = {}]) => ({
+        type: "toolCall",
+        id: callId,
+        name,
+        arguments: args,
+      })),
+    },
+  };
+}
+
+function toolResultEntry(
+  id: string,
+  parentId: string | null,
+  callId: string,
+  name: string,
+): PiSessionEntry {
+  return {
+    type: "message",
+    id,
+    parentId,
+    timestamp: "2026-01-01T00:00:03.000Z",
+    message: {
+      role: "toolResult",
+      toolCallId: callId,
+      toolName: name,
+      content: [{ type: "text", text: "ok" }],
+    },
+  };
+}
+
 const SOURCE_ENTRIES: PiSessionEntry[] = [
   { type: "model_change", id: "m1", parentId: null, provider: "opencode-go", modelId: "m" },
   message("u1", "m1", "user", "first question"),
   message("a1", "u1", "assistant", "first answer"),
   message("u2", "a1", "user", "second question"),
+  message("a2", "u2", "assistant", "second answer"),
+];
+
+/**
+ * Two turns with tool batches: u1 → a1 (bash + read, parallel) → t1 → t2 →
+ * a2 → u2 → a3 (bash) → t3 → a4.
+ */
+const TOOL_ENTRIES: PiSessionEntry[] = [
+  { type: "model_change", id: "m1", parentId: null, provider: "opencode-go", modelId: "m" },
+  message("u1", "m1", "user", "first question"),
+  assistantToolCall("a1", "u1", [
+    ["tc1", "bash"],
+    ["tc2", "read"],
+  ]),
+  toolResultEntry("t1", "a1", "tc1", "bash"),
+  toolResultEntry("t2", "t1", "tc2", "read"),
+  message("a2", "t2", "assistant", "first answer"),
+  message("u2", "a2", "user", "second question"),
+  assistantToolCall("a3", "u2", [["tc3", "bash"]]),
+  toolResultEntry("t3", "a3", "tc3", "bash"),
+  message("a4", "t3", "assistant", "second answer"),
+];
+
+/** Turn aborted mid-batch: a1 issued two calls, only tc1 was answered. */
+const ABORTED_BATCH_ENTRIES: PiSessionEntry[] = [
+  { type: "model_change", id: "m1", parentId: null, provider: "opencode-go", modelId: "m" },
+  message("u1", "m1", "user", "first question"),
+  assistantToolCall("a1", "u1", [
+    ["tc1", "bash"],
+    ["tc2", "read"],
+  ]),
+  toolResultEntry("t1", "a1", "tc1", "bash"),
+  message("u2", "t1", "user", "second question"),
   message("a2", "u2", "assistant", "second answer"),
 ];
 
@@ -143,6 +219,40 @@ describe("real-fork.points", () => {
     expect(result.branchEntries).toBe(5);
   });
 
+  it("groups each turn's tool batches under the user message that started it", async () => {
+    const { paseo } = await makeAgent({ entries: TOOL_ENTRIES });
+    const result = await createForkPointsHandler()({ agentId: "parent" }, context(paseo));
+    expect(result.branchEntries).toBe(10);
+    // Newest user message first; each row carries only its own turn's batches.
+    expect(result.points.map((point) => point.messageId)).toEqual(["u2", "u1"]);
+    expect(result.points[0].toolPoints.map((point) => point.messageId)).toEqual(["t3"]);
+    expect(result.points[0].toolPoints[0]).toMatchObject({ preview: "bash", entries: 9 });
+    expect(result.points[1].toolPoints.map((point) => point.messageId)).toEqual(["t2"]);
+    // The parallel batch is one point, anchored at its last result, named by
+    // both calls. Forking there keeps m1, u1, a1, t1, t2.
+    expect(result.points[1].toolPoints[0]).toMatchObject({ preview: "bash · read", entries: 5 });
+  });
+
+  it("labels a single-call batch with its key argument, not just the tool name", async () => {
+    const { paseo } = await makeAgent({
+      entries: [
+        { type: "model_change", id: "m1", parentId: null, provider: "opencode-go", modelId: "m" },
+        message("u1", "m1", "user", "first question"),
+        assistantToolCall("a1", "u1", [["tc1", "bash", { command: "rg -n fork dist" }]]),
+        toolResultEntry("t1", "a1", "tc1", "bash"),
+        message("a2", "t1", "assistant", "first answer"),
+      ],
+    });
+    const result = await createForkPointsHandler()({ agentId: "parent" }, context(paseo));
+    expect(result.points[0].toolPoints[0].preview).toBe("bash · rg -n fork dist");
+  });
+
+  it("lists no tool batches for a settled conversation without tool calls", async () => {
+    const { paseo } = await makeAgent();
+    const result = await createForkPointsHandler()({ agentId: "parent" }, context(paseo));
+    expect(result.points.every((point) => point.toolPoints.length === 0)).toBe(true);
+  });
+
   it("rejects agents from other providers", async () => {
     const { paseo } = await makeAgent({ provider: "claude" });
     await expect(createForkPointsHandler()({ agentId: "parent" }, context(paseo))).rejects.toThrow(
@@ -212,7 +322,45 @@ describe("real-fork.fork", () => {
 
     await expect(
       createForkHandler({ importSession })({ agentId: "parent", messageId: "a1" }, context(paseo)),
-    ).rejects.toThrow(/not a user message/u);
+    ).rejects.toThrow(/not a fork point/u);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("forks just after a completed tool batch, keeping the batch's results", async () => {
+    const { paseo } = await makeAgent({ entries: TOOL_ENTRIES });
+    const { calls, importSession } = recorder();
+
+    const result = await createForkHandler({ importSession })(
+      { agentId: "parent", messageId: "t2" },
+      context(paseo),
+    );
+
+    // t2's batch (a1's bash + read, answered by t1 and t2) stays in the copy;
+    // everything from a2 on is dropped with the parent's tail.
+    expect(result.entries).toBe(5);
+    expect(result.dropped).toBe(5);
+    expect(calls[0].labels["real-fork.point"]).toBe("t2");
+    const written = parseSession(await readFile(calls[0].sessionFile, "utf8"));
+    expect(written.header.id).toBe(SESSION_ID);
+    expect(written.entries.slice(0, 5).map((entry) => entry.id)).toEqual([
+      "m1",
+      "u1",
+      "a1",
+      "t1",
+      "t2",
+    ]);
+    expect(written.entries[5]).toMatchObject({ type: "session_info", name: "Parent task · fork" });
+  });
+
+  it("refuses an aborted batch (a parallel result missing) without importing", async () => {
+    const { paseo } = await makeAgent({ entries: ABORTED_BATCH_ENTRIES });
+    const { calls, importSession } = recorder();
+
+    // t1 answered only tc1; a1's tc2 is dangling, so a cut after t1 would
+    // hand the provider a tool call with no result.
+    await expect(
+      createForkHandler({ importSession })({ agentId: "parent", messageId: "t1" }, context(paseo)),
+    ).rejects.toThrow(/not a fork point/u);
     expect(calls).toHaveLength(0);
   });
 

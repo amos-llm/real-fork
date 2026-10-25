@@ -16,10 +16,11 @@ type PillState = {
 
 /**
  * Registers one "Real fork" composer pill per pi agent. The pill opens a picker
- * of user messages on the agent's active branch; picking one writes a new pi
- * session file holding that branch and reuses it for a new agent, which keeps
- * the provider's prefix cache warm (unlike the built-in Fork, which starts a new
- * session from a text summary).
+ * over the agent's active branch — user messages, plus each turn's tool calls
+ * collapsed under its user message; picking one writes a new pi session file
+ * holding the branch cut at that point and reuses it for a new agent, which
+ * keeps the provider's prefix cache warm (unlike the built-in Fork, which
+ * starts a new session from a text summary).
  *
  * Only pi agents get the pill: the fork is built on pi's own session JSONL, so
  * there is nothing to reuse for other providers.

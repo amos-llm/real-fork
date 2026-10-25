@@ -7,7 +7,7 @@ import {
   FORK_SOURCE_LABEL,
   forkPointsRpc,
   forkRpc,
-  type ForkPoint,
+  type ForkTurn,
 } from "../shared/fork";
 import { importIntoWorkspace, type ImportSession } from "./daemon-import";
 import { buildForkFile, forkFilePath, writeForkFile } from "./fork-file";
@@ -18,6 +18,8 @@ import {
   parseSession,
   renderSession,
   sliceBranch,
+  toolBatchPoints,
+  toolBatchPreview,
   type PiSessionEntry,
 } from "./pi-session";
 import { resolveSessionFile } from "./pi-session-file";
@@ -36,6 +38,12 @@ import { resolveSessionFile } from "./pi-session-file";
  *   - the header must keep the source **session id**, because pi passes it to the
  *     provider as the prompt cache key. Measured on opencode-go/deepseek: same id
  *     → 248k cached input and ~$0.0008; fresh id → 0 cached and ~$0.037.
+ *
+ * The cut always lands on a prefix the source session itself requested from
+ * the provider, so the copy stays byte-identical either way: a user-message
+ * anchor sits just before a turn, and a tool-result anchor sits just after a
+ * completed tool batch — the source's next request in that turn had exactly
+ * that prefix.
  *
  * The file is handed to the daemon's import path (the same one `paseo import`
  * drives), so the session opens from the file and the history replays into the
@@ -67,15 +75,18 @@ export function forkTitle(title: string | null): string {
   return base.endsWith("· fork") ? base : `${base} · fork`;
 }
 
-/** Branch entries before `messageId` (a user message the fork rewrites). */
+/**
+ * Branch entries kept when forking at `messageId` (a user message or a
+ * completed tool batch).
+ */
 function selectSlice(branch: readonly PiSessionEntry[], messageId: string) {
   const slice = sliceBranch(branch, messageId);
   if (!slice) {
-    const points = branchPoints(branch);
+    const hasPoint = branchPoints(branch).length > 0 || toolBatchPoints(branch).length > 0;
     throw new Error(
-      points.length === 0
-        ? "This agent has no user message to fork at yet"
-        : "That message is not a user message on this agent's active branch; fork at a user message instead",
+      hasPoint
+        ? "That entry is not a fork point on this agent's active branch; fork at a user message or a completed tool call instead"
+        : "This agent has no forkable point yet — no user message or completed tool call",
     );
   }
   return slice;
@@ -87,14 +98,38 @@ export function createForkPointsHandler() {
     const sessionFile = await resolveSessionFile(agent.persistence);
     const text = await readFile(sessionFile, "utf8");
     const branch = activeBranch(parseSession(text).entries);
-    const points: ForkPoint[] = branchPoints(branch)
-      .filter(({ entry }) => Boolean(entry.id))
-      .map(({ entry, entries }) => ({
+    const users = branchPoints(branch).filter(({ entry }) => Boolean(entry.id));
+    // Path details are shown relative to the agent's cwd when they live in it.
+    const batches = toolBatchPoints(branch, `${agent.cwd}/`).filter(({ entry }) =>
+      Boolean(entry.id),
+    );
+    // The picker is one interleaved timeline: each user row carries the tool
+    // batches of the turn it started, collapsed by default on the client. A
+    // batch belongs to that turn when its cut lies between the message and the
+    // next newer user message (the branch end for the newest one). Batches
+    // before the first user message cannot occur in a pi-produced branch.
+    const points: ForkTurn[] = users.map(({ entry, entries }, i) => {
+      const upper = i === 0 ? branch.length : users[i - 1].entries;
+      return {
         messageId: entry.id ?? "",
         preview: messagePreview(entry),
         at: entry.timestamp ?? null,
         entries,
-      }));
+        toolPoints: batches
+          .filter(({ entries: cut }) => cut > entries && cut < upper)
+          .map(({ entry: toolEntry, entries: cut, toolNames, detail }) => ({
+            messageId: toolEntry.id ?? "",
+            // Single-call batches say which call it is (name + key argument);
+            // parallel batches stay a compact list of names.
+            preview:
+              (toolNames?.length ?? 0) === 1 && detail
+                ? `${toolNames?.[0]} · ${detail}`
+                : toolBatchPreview(toolNames ?? []),
+            at: toolEntry.timestamp ?? null,
+            entries: cut,
+          })),
+      };
+    });
     return {
       agentId: agent.id,
       cwd: agent.cwd,
@@ -112,11 +147,14 @@ export function createForkHandler(options: { importSession?: ImportSession } = {
     const sourceFile = await resolveSessionFile(agent.persistence);
     const source = parseSession(await readFile(sourceFile, "utf8"));
     const branch = activeBranch(source.entries);
-    // Forking always cuts just before a user message: the copy is the settled
-    // conversation up to that point, and the point itself is dropped, because
-    // the fork exists to rewrite that message in its own composer. Whatever
-    // follows the point — including a half-finished turn with a dangling tool
-    // call — is dropped with the parent's tail.
+    // The cut lands on a state pi can resume. A user-message anchor cuts just
+    // before it: the copy is the settled conversation up to that point, and
+    // the point itself is dropped because the fork rewrites it in its
+    // composer. A tool-result anchor cuts just after a completed batch: the
+    // copy keeps the batch and the fork redirects the turn from there — the
+    // same state pi's own steering produces. Whatever follows the cut —
+    // including a half-finished turn with a dangling tool call — is dropped
+    // with the parent's tail.
     const slice = selectSlice(branch, input.messageId);
     const title = forkTitle(agent.title);
 

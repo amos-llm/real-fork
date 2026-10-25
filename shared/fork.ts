@@ -24,9 +24,26 @@ export const forkPointSchema = z.object({
 export type ForkPoint = z.infer<typeof forkPointSchema>;
 
 /**
- * Fork points of one agent: the user messages on its active pi branch, newest
- * first. Reading them needs the pi session file, which only the daemon side can
- * locate, so the picker asks the server instead of the timeline.
+ * One row of the picker: a user message anchor plus the tool batches of the
+ * turn it started. The tool rows render collapsed under the message, keeping
+ * the interleaved timeline readable when a turn runs many tool calls.
+ */
+export const forkTurnSchema = z.object({
+  ...forkPointSchema.shape,
+  /**
+   * Tool call anchors of this message's turn, newest first — one per
+   * completed tool batch (every call has its result): the cut is just after
+   * the batch, which the fork keeps, so it redirects the turn from there.
+   */
+  toolPoints: z.array(forkPointSchema),
+});
+
+export type ForkTurn = z.infer<typeof forkTurnSchema>;
+
+/**
+ * Fork points of one agent, from its active pi branch, newest first. Reading
+ * them needs the pi session file, which only the daemon side can locate, so
+ * the picker asks the server instead of the timeline.
  */
 export const forkPointsRpc = defineRpc({
   name: "real-fork.points",
@@ -37,16 +54,23 @@ export const forkPointsRpc = defineRpc({
     sessionFile: z.string(),
     /** Total entries on the active branch (root → leaf). */
     branchEntries: z.number().int().nonnegative(),
-    points: z.array(forkPointSchema),
+    /**
+     * User message anchors, newest first. Each carries the tool batches of
+     * the turn it started, so the picker renders the interleaved timeline
+     * with the (many) tool rows collapsed by default.
+     */
+    points: z.array(forkTurnSchema),
   }),
 });
 
 /**
- * Fork an agent by writing a new pi session file and reusing it for a new agent.
- * The copy is the active branch cut just before `messageId` (a user message):
- * the point's message is dropped so the fork rewrites it in its composer, and
- * anything after the point — including a half-finished turn — is dropped too,
- * so the copy is always a settled session.
+ * Fork an agent by writing a new pi session file and reusing it for a new
+ * agent. The copy is the active branch cut at `messageId`: a user message is
+ * cut just before (the point's message is dropped so the fork rewrites it in
+ * its composer), a completed tool batch is cut just after (the fork keeps the
+ * batch and redirects the turn from there). Anything after the cut —
+ * including a half-finished turn — is dropped, so the copy is always a state
+ * pi can resume.
  */
 export const forkRpc = defineRpc({
   name: "real-fork.fork",
@@ -59,9 +83,9 @@ export const forkRpc = defineRpc({
     title: z.string().nullable(),
     cwd: z.string(),
     sessionFile: z.string(),
-    /** Entries kept from the source branch (root → just before the fork point). */
+    /** Entries kept from the source branch (root → the cut). */
     entries: z.number().int().nonnegative(),
-    /** Entries dropped from the fork point on, including the point itself. */
+    /** Entries dropped from the cut on. */
     dropped: z.number().int().nonnegative(),
   }),
 });

@@ -23,7 +23,7 @@ export type PiSessionEntry = {
   id?: string;
   parentId?: string | null;
   timestamp?: string;
-  message?: { role?: string; content?: unknown };
+  message?: { role?: string; content?: unknown; toolCallId?: string; toolName?: string };
   [key: string]: unknown;
 };
 
@@ -42,16 +42,27 @@ export interface ParsedSession {
 
 export interface BranchPoint {
   entry: PiSessionEntry;
-  /** How many entries a fork at this point keeps — everything before it. */
+  /** How many entries a fork at this point keeps — everything up to the cut. */
   entries: number;
+  /** Tool names of the completed batch, for after-tool-call points. */
+  toolNames?: readonly string[];
+  /**
+   * For single-call batches: the call's key argument (bash command, file
+   * path, …), so the picker row says *which* call it is.
+   */
+  detail?: string;
 }
 
 export interface BranchSlice {
-  /** Branch entries kept by the fork: root up to (not including) the point. */
+  /** Branch entries kept by the fork: root up to the cut. */
   branch: PiSessionEntry[];
-  /** The user message the fork was taken at; deliberately kept out of the copy. */
+  /**
+   * The anchor entry. A user message is cut just before, so it is kept out of
+   * the copy (the fork rewrites it); a tool result is cut just after, so it is
+   * the last entry kept.
+   */
   point: PiSessionEntry;
-  /** Entries dropped from the point on, including the point itself. */
+  /** Entries dropped from the cut on. */
   dropped: number;
 }
 
@@ -136,6 +147,14 @@ export function messagePreview(entry: PiSessionEntry, limit = 140): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
+/** "bash" / "bash · read" / "bash · read · read (+2)": one label for a tool batch. */
+export function toolBatchPreview(toolNames: readonly string[], limit = 3): string {
+  if (toolNames.length === 0) return "(tool call)";
+  const shown = toolNames.slice(0, limit).join(" · ");
+  const rest = toolNames.length - limit;
+  return rest > 0 ? `${shown} (+${rest})` : shown;
+}
+
 /**
  * User messages on a branch, newest first. `entries` is the size of the
  * session a fork at that point would keep — everything before the message.
@@ -152,11 +171,123 @@ export function branchPoints(branch: readonly PiSessionEntry[]): BranchPoint[] {
 }
 
 /**
- * Cut the branch so it ends just before `messageId`. Returns null when that
- * entry is not a user message on the branch — Paseo's own message ids for
- * assistant rows are provider-derived, so a fork point must be anchored to a
- * user message. The point itself is dropped: the fork exists to rewrite that
- * message, so the copy ends on the settled state right before it.
+ * The batch a tool result belongs to: the run of consecutive results ending
+ * at `index`, and the assistant message that issued them. `complete` is true
+ * when every call that assistant issued has a result in the run — a cut just
+ * after `index` then leaves a resumable state (pi's own steering produces the
+ * same `…assistant(toolCall) → toolResult` shape), while a missing result
+ * would dangle a tool call the provider rejects. Returns null when the run is
+ * not anchored by an assistant message that issued tool calls.
+ */
+function toolBatchAt(
+  branch: readonly PiSessionEntry[],
+  index: number,
+  strip?: string,
+): { entry: PiSessionEntry; toolNames: string[]; detail?: string; complete: boolean } | null {
+  const entry = branch[index];
+  if (entry?.type !== "message" || entry.message?.role !== "toolResult") return null;
+  const resultIds = new Set<string>();
+  const toolNames: string[] = [];
+  let j = index;
+  for (;;) {
+    const item = branch[j];
+    if (item?.type !== "message" || item.message?.role !== "toolResult") break;
+    const callId = item.message?.toolCallId;
+    if (typeof callId === "string" && callId) resultIds.add(callId);
+    const name = item.message?.toolName;
+    if (typeof name === "string" && name.trim()) toolNames.unshift(name);
+    j--;
+  }
+  const assistant = branch[j];
+  if (assistant?.type !== "message" || assistant.message?.role !== "assistant") return null;
+  const content = Array.isArray(assistant.message.content) ? assistant.message.content : [];
+  const parts = content.filter((part): part is Record<string, unknown> => isRecord(part));
+  const issued = parts
+    .filter((part) => part.type === "toolCall")
+    .map((part) => part.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  const complete = issued.length > 0 && issued.every((id) => resultIds.has(id));
+  // A single-call batch gets the call's key argument in its label, so the
+  // picker row identifies *which* call it is, not just the tool name.
+  let detail: string | undefined;
+  if (complete && issued.length === 1) {
+    const callPart = parts.find((part) => part.type === "toolCall" && part.id === issued[0]);
+    const name = typeof callPart?.name === "string" ? callPart.name : "";
+    detail = toolCallDetail(name, callPart?.arguments, strip) || undefined;
+  }
+  return { entry, toolNames, detail, complete };
+}
+
+/** The one argument that says what a call did: command, path, query, code… */
+function toolCallDetail(name: string, args: unknown, strip?: string): string {
+  if (!isRecord(args)) return "";
+  const keys =
+    name === "bash"
+      ? ["command"]
+      : name === "read" || name === "edit" || name === "write"
+        ? ["path"]
+        : name === "web_search"
+          ? ["query"]
+          : name === "codemode"
+            ? ["code"]
+            : ["command", "path", "query", "url", "code"];
+  let detail = "";
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) {
+      detail = value;
+      break;
+    }
+  }
+  // File paths shorter relative to the session's cwd; commands without their
+  // `cd <dir> &&` preamble — the leading context eats the useful part.
+  if (
+    (name === "read" || name === "edit" || name === "write") &&
+    strip &&
+    detail.startsWith(strip)
+  ) {
+    detail = detail.slice(strip.length);
+  }
+  if (name === "bash") {
+    const cd = detail.match(/^cd \S+ && /u);
+    if (cd) detail = detail.slice(cd[0].length);
+  }
+  const oneLine = detail.replace(/\s+/gu, " ").trim();
+  return oneLine.length > 48 ? `${oneLine.slice(0, 48).trimEnd()}…` : oneLine;
+}
+
+/**
+ * After-tool-call points on a branch, newest first: one per completed tool
+ * batch — the cut right after the batch's last tool result. "Completed" means
+ * every call the batch's assistant message issued has its result before the
+ * cut, so the fork's first message lands on the state pi's own steering
+ * produces (`…toolResult → user`). A batch may also end the branch — a turn
+ * interrupted after its last tool call is forkable the same way.
+ * The anchor is the batch's last tool result; `entries` is the cut size.
+ */
+export function toolBatchPoints(branch: readonly PiSessionEntry[], strip?: string): BranchPoint[] {
+  const points: BranchPoint[] = [];
+  for (let i = 0; i < branch.length; i++) {
+    const batch = toolBatchAt(branch, i, strip);
+    if (!batch || !batch.complete) continue;
+    points.push({
+      entry: batch.entry,
+      entries: i + 1,
+      toolNames: batch.toolNames,
+      ...(batch.detail ? { detail: batch.detail } : {}),
+    });
+  }
+  return points.toReversed();
+}
+
+/**
+ * Cut the branch at `messageId`, which must be a fork point on the branch.
+ * A user message is cut just before: the point is dropped because the fork
+ * rewrites it, so the copy ends on the settled state right before it. A tool
+ * result is cut just after — but only when its batch is complete (every call
+ * it issued has a result before the cut) — and the copy keeps the result, so
+ * the fork redirects the turn from there. Anything else — including assistant
+ * entries, whose Paseo ids are provider-derived — is not an anchor.
  */
 export function sliceBranch(
   branch: readonly PiSessionEntry[],
@@ -165,12 +296,24 @@ export function sliceBranch(
   const index = branch.findIndex((entry) => entry.id === messageId);
   if (index < 0) return null;
   const point = branch[index];
-  if (point.type !== "message" || point.message?.role !== "user") return null;
-  return {
-    branch: branch.slice(0, index),
-    point,
-    dropped: branch.length - index,
-  };
+  if (point.type !== "message") return null;
+  if (point.message?.role === "user") {
+    return {
+      branch: branch.slice(0, index),
+      point,
+      dropped: branch.length - index,
+    };
+  }
+  if (point.message?.role === "toolResult") {
+    const batch = toolBatchAt(branch, index);
+    if (!batch || !batch.complete) return null;
+    return {
+      branch: branch.slice(0, index + 1),
+      point,
+      dropped: branch.length - (index + 1),
+    };
+  }
+  return null;
 }
 
 /** Header to write for the fork: the new session's identity, source recorded. */
